@@ -1643,6 +1643,214 @@ function getDashboardPage(): string {
       if (!str) return '';
       return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
     }
+
+    // === Suites Functions ===
+
+    async function loadSuites() {
+      try {
+        const res = await fetch('/admin/api/suites');
+        const suites = await res.json();
+        const tbody = document.getElementById('suites-table');
+
+        if (suites.length === 0) {
+          tbody.innerHTML = '<tr><td colspan="4" class="empty-state"><h3>No suites yet</h3><p>Create a suite to group courses for IMSCC export</p></td></tr>';
+          return;
+        }
+
+        tbody.innerHTML = suites.map(s => \`
+          <tr>
+            <td><strong>\${escapeHtml(s.title)}</strong>\${s.description ? '<br><small style="color:#666">' + escapeHtml(s.description) + '</small>' : ''}</td>
+            <td><span class="badge badge-info">\${s.course_count} courses</span></td>
+            <td>\${new Date(s.created_at).toLocaleDateString()}</td>
+            <td>
+              <button class="btn btn-sm btn-secondary" onclick="showManageSuiteModal('\${s.id}', '\${escapeHtml(s.title).replace(/'/g, "\\\\'")}')">Manage</button>
+              <button class="btn btn-sm btn-primary" onclick="showIMSCCModal('\${s.id}')">IMSCC</button>
+              <button class="btn btn-sm btn-danger" onclick="deleteSuite('\${s.id}')">Delete</button>
+            </td>
+          </tr>
+        \`).join('');
+      } catch (e) {
+        console.error('Failed to load suites:', e);
+      }
+    }
+
+    function showCreateSuiteModal() {
+      document.getElementById('createSuiteForm').reset();
+      document.getElementById('createSuiteModal').classList.add('active');
+    }
+
+    document.getElementById('createSuiteForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const formData = new FormData(e.target);
+      const data = Object.fromEntries(formData.entries());
+
+      try {
+        const res = await fetch('/admin/api/suites', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(data)
+        });
+
+        if (!res.ok) throw new Error('Failed to create suite');
+
+        closeModal('createSuiteModal');
+        loadSuites();
+        alert('Suite created successfully!');
+      } catch (e) {
+        alert('Failed to create suite: ' + e.message);
+      }
+    });
+
+    async function showManageSuiteModal(suiteId, suiteTitle) {
+      document.getElementById('manage-suite-id').value = suiteId;
+      document.getElementById('manage-suite-title').textContent = 'Manage: ' + suiteTitle;
+
+      // Load suite courses
+      await loadSuiteCourses(suiteId);
+
+      // Load available courses for dropdown
+      const res = await fetch('/admin/api/courses');
+      const courses = await res.json();
+      const select = document.getElementById('add-course-select');
+      select.innerHTML = '<option value="">Select a course to add...</option>' +
+        courses.filter(c => c.active).map(c => \`<option value="\${c.id}">\${escapeHtml(c.title)}</option>\`).join('');
+
+      document.getElementById('manageSuiteModal').classList.add('active');
+    }
+
+    async function loadSuiteCourses(suiteId) {
+      try {
+        const res = await fetch('/admin/api/suites/' + suiteId);
+        const suite = await res.json();
+        const container = document.getElementById('suite-courses-list');
+
+        if (!suite.courses || suite.courses.length === 0) {
+          container.innerHTML = '<div class="empty-state" style="padding: 24px;">No courses yet</div>';
+          return;
+        }
+
+        container.innerHTML = suite.courses.map((c, i) => \`
+          <div style="display: flex; align-items: center; padding: 12px 16px; border-bottom: 1px solid #eee;">
+            <span style="color: #999; width: 30px;">\${i + 1}.</span>
+            <span style="flex: 1;">\${escapeHtml(c.title)} <span class="badge badge-info" style="margin-left: 8px;">SCORM \${c.scorm_version}</span></span>
+            <button class="btn btn-sm btn-danger" onclick="removeCourseFromSuite('\${suiteId}', '\${c.id}')">Remove</button>
+          </div>
+        \`).join('');
+      } catch (e) {
+        console.error('Failed to load suite courses:', e);
+      }
+    }
+
+    async function addCourseToSuite() {
+      const suiteId = document.getElementById('manage-suite-id').value;
+      const courseId = document.getElementById('add-course-select').value;
+
+      if (!courseId) {
+        alert('Please select a course');
+        return;
+      }
+
+      try {
+        const res = await fetch('/admin/api/suites/' + suiteId + '/courses', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ courseId })
+        });
+
+        if (!res.ok) throw new Error('Failed to add course');
+
+        await loadSuiteCourses(suiteId);
+        loadSuites();
+        document.getElementById('add-course-select').value = '';
+      } catch (e) {
+        alert('Failed to add course: ' + e.message);
+      }
+    }
+
+    async function removeCourseFromSuite(suiteId, courseId) {
+      if (!confirm('Remove this course from the suite?')) return;
+
+      try {
+        await fetch('/admin/api/suites/' + suiteId + '/courses/' + courseId, { method: 'DELETE' });
+        await loadSuiteCourses(suiteId);
+        loadSuites();
+      } catch (e) {
+        alert('Failed to remove course');
+      }
+    }
+
+    async function deleteSuite(id) {
+      if (!confirm('Are you sure you want to delete this suite?')) return;
+
+      try {
+        await fetch('/admin/api/suites/' + id, { method: 'DELETE' });
+        loadSuites();
+      } catch (e) {
+        alert('Failed to delete suite');
+      }
+    }
+
+    async function showIMSCCModal(suiteId) {
+      document.getElementById('imscc-suite-id').value = suiteId;
+
+      // Load consumers for select
+      const res = await fetch('/admin/api/consumers');
+      const consumers = await res.json();
+      const select = document.getElementById('imscc-consumer-select');
+      select.innerHTML = '<option value="">Select a consumer...</option>' +
+        consumers.filter(c => c.active).map(c => \`<option value="\${c.id}">\${escapeHtml(c.name)}</option>\`).join('');
+
+      document.getElementById('imsccModal').classList.add('active');
+    }
+
+    document.getElementById('imsccForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const suiteId = document.getElementById('imscc-suite-id').value;
+      const consumerId = document.getElementById('imscc-consumer-select').value;
+
+      if (!consumerId) {
+        alert('Please select a consumer');
+        return;
+      }
+
+      window.location.href = '/admin/api/suites/' + suiteId + '/imscc?consumerId=' + consumerId;
+      closeModal('imsccModal');
+    });
+
+    // === Settings Functions ===
+
+    async function loadSettings() {
+      try {
+        const res = await fetch('/admin/api/settings');
+        const settings = await res.json();
+        document.getElementById('settings-base-url').value = settings.base_url || '';
+      } catch (e) {
+        console.error('Failed to load settings:', e);
+      }
+    }
+
+    document.getElementById('settingsForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const formData = new FormData(e.target);
+      const data = Object.fromEntries(formData.entries());
+
+      try {
+        const res = await fetch('/admin/api/settings', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(data)
+        });
+
+        if (!res.ok) {
+          const err = await res.json();
+          throw new Error(err.error || 'Failed to save settings');
+        }
+
+        alert('Settings saved successfully!');
+      } catch (e) {
+        alert('Failed to save settings: ' + e.message);
+      }
+    });
   </script>
 </body>
 </html>`;

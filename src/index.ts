@@ -7,7 +7,7 @@ import { ltiRouter } from './routes/lti.js';
 import { dispatchRouter } from './routes/dispatch.js';
 import { scormApiRouter } from './routes/scorm-api.js';
 import { adminRouter } from './routes/admin.js';
-import { initDatabase } from './db/index.js';
+import { initDatabase, loadSettings } from './db/index.js';
 
 const app = express();
 
@@ -62,6 +62,7 @@ app.use((err: Error, _req: express.Request, res: express.Response, _next: expres
 async function start() {
   try {
     await initDatabase();
+    await loadSettings();
     app.listen(config.port, () => {
       console.log(`SCORM-LTI Proxy server running on port ${config.port}`);
       console.log(`Base URL: ${config.baseUrl}`);

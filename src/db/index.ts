@@ -1,5 +1,5 @@
 import pg from 'pg';
-import { config } from '../config.js';
+import { config, updateRuntimeConfig } from '../config.js';
 
 const { Pool } = pg;
 
@@ -127,4 +127,25 @@ export async function query<T extends pg.QueryResultRow = pg.QueryResultRow>(
   params?: unknown[]
 ): Promise<pg.QueryResult<T>> {
   return pool.query<T>(text, params);
+}
+
+/**
+ * Load settings from database and update runtime config
+ */
+export async function loadSettings(): Promise<void> {
+  try {
+    const result = await pool.query<{ key: string; value: string }>(
+      'SELECT key, value FROM settings'
+    );
+
+    for (const row of result.rows) {
+      if (row.key === 'base_url') {
+        updateRuntimeConfig({ baseUrl: row.value });
+        console.log(`Loaded base_url from database: ${row.value}`);
+      }
+    }
+  } catch (error) {
+    // Settings table might not exist yet on first run
+    console.log('No saved settings found, using defaults');
+  }
 }

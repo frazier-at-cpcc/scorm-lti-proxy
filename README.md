@@ -13,7 +13,10 @@ A Node.js server that hosts SCORM content centrally and provides two integration
 - Generate thin SCORM dispatch packages for distribution
 - xAPI statement generation for dispatch mode
 - Multi-tenant support (multiple LMS consumers)
+- **Course Suites** - Group multiple SCORM courses together
+- **IMS Common Cartridge (IMSCC) Export** - Import suites into Canvas, Moodle, or Brightspace
 - **Web-based Admin Dashboard** with authentication
+- **Configurable Settings** - Set server URL from the admin UI
 - RESTful Admin API for programmatic access
 
 ## Quick Start
@@ -61,7 +64,9 @@ The admin dashboard is available at `http://localhost:3000/admin` and provides:
 - **Dashboard** - Overview stats (consumers, courses, launches, completions)
 - **Consumers** - Manage LTI consumers, view credentials
 - **Courses** - Upload SCORM packages, download dispatch packages
+- **Suites** - Create course bundles for IMSCC export
 - **Launch History** - View recent learner activity
+- **Settings** - Configure server base URL
 
 ### Default Login
 
@@ -108,6 +113,16 @@ All `/admin/api/*` endpoints require authentication (session cookie from login).
 | `/admin/api/courses/:id` | DELETE | Delete course |
 | `/admin/api/dispatch/download/:courseId` | GET | Download dispatch package |
 | `/admin/api/launches` | GET | List recent launches |
+| `/admin/api/suites` | GET | List all course suites |
+| `/admin/api/suites` | POST | Create new suite |
+| `/admin/api/suites/:id` | GET | Get suite with courses |
+| `/admin/api/suites/:id` | PUT | Update suite |
+| `/admin/api/suites/:id` | DELETE | Delete suite |
+| `/admin/api/suites/:id/courses` | POST | Add course to suite |
+| `/admin/api/suites/:id/courses/:courseId` | DELETE | Remove course from suite |
+| `/admin/api/suites/:id/imscc` | GET | Download IMSCC file |
+| `/admin/api/settings` | GET | Get server settings |
+| `/admin/api/settings` | PUT | Update server settings |
 
 ### SCORM Runtime API
 
@@ -183,6 +198,29 @@ curl -b cookies.txt \
 ```
 
 The customer uploads this thin package to their LMS. When launched, it redirects to your hosted content.
+
+#### 5. Create a Course Suite & Export IMSCC
+
+For LMS platforms that support IMS Common Cartridge imports:
+
+```bash
+# Create a suite
+curl -b cookies.txt -X POST http://localhost:3000/admin/api/suites \
+  -H "Content-Type: application/json" \
+  -d '{"title": "Safety Training 2024", "description": "Complete safety curriculum"}'
+
+# Add courses to the suite
+curl -b cookies.txt -X POST http://localhost:3000/admin/api/suites/{suiteId}/courses \
+  -H "Content-Type: application/json" \
+  -d '{"courseId": "{courseId}"}'
+
+# Download IMSCC file
+curl -b cookies.txt \
+  "http://localhost:3000/admin/api/suites/{suiteId}/imscc?consumerId={consumerId}" \
+  --output course-suite.imscc
+```
+
+The generated `.imscc` file can be imported directly into Canvas, Moodle, or Brightspace. Each course in the suite becomes an LTI activity that launches the hosted SCORM content.
 
 ## Architecture
 
@@ -265,6 +303,9 @@ The application auto-creates these tables on startup:
 - `launches` - LTI launch records with outcome URLs
 - `attempts` - Learner attempts with CMI data
 - `dispatch_tokens` - Tokens for dispatch package authentication
+- `suites` - Course collections for IMSCC export
+- `suite_courses` - Junction table linking courses to suites
+- `settings` - Runtime configuration (e.g., base URL)
 
 ## License
 
