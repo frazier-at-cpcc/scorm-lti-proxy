@@ -62,7 +62,7 @@ export async function extractScormPackage(
  */
 export async function parseManifest(manifestPath: string): Promise<ManifestData> {
   const xmlContent = await fs.readFile(manifestPath, 'utf-8');
-  const result = await parseXml(xmlContent);
+  const result = (await parseXml(xmlContent)) as { manifest?: Record<string, unknown> };
 
   const manifest = result.manifest;
   if (!manifest) {
@@ -84,11 +84,13 @@ export async function parseManifest(manifestPath: string): Promise<ManifestData>
   // Find launch path (first SCO resource)
   const launchPath = findLaunchPath(organizations, resources);
 
+  const attrs = manifest.$ as Record<string, string> | undefined;
+
   return {
     title,
     scormVersion,
     launchPath,
-    identifier: manifest.$?.identifier || 'unknown',
+    identifier: attrs?.identifier || 'unknown',
     organizations,
     resources,
   };
