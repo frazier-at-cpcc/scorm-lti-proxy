@@ -3,10 +3,17 @@ import path from 'path';
 
 dotenv.config();
 
+// Runtime-configurable settings (can be updated via admin UI)
+const runtimeConfig = {
+  baseUrl: process.env.BASE_URL || 'http://localhost:3000',
+};
+
 export const config = {
   port: parseInt(process.env.PORT || '3000', 10),
   nodeEnv: process.env.NODE_ENV || 'development',
-  baseUrl: process.env.BASE_URL || 'http://localhost:3000',
+  get baseUrl() {
+    return runtimeConfig.baseUrl;
+  },
 
   database: {
     url: process.env.DATABASE_URL || 'postgresql://postgres:postgres@localhost:5432/scorm_lti_proxy',
@@ -34,3 +41,12 @@ export const config = {
 
   isDev: process.env.NODE_ENV !== 'production',
 };
+
+/**
+ * Update runtime configuration settings
+ */
+export function updateRuntimeConfig(updates: { baseUrl?: string }) {
+  if (updates.baseUrl) {
+    runtimeConfig.baseUrl = updates.baseUrl;
+  }
+}

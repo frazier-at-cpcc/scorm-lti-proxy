@@ -2,10 +2,11 @@ import { Router, Request, Response } from 'express';
 import multer from 'multer';
 import path from 'path';
 import fs from 'fs/promises';
-import { config } from '../config.js';
+import { config, updateRuntimeConfig } from '../config.js';
 import { query } from '../db/index.js';
 import { extractScormPackage, parseManifest } from '../services/content-manager.js';
 import { generateDispatchPackage } from '../services/dispatch-generator.js';
+import { generateIMSCC } from '../services/imscc-generator.js';
 import { requireAuth, handleLogin, handleLogout, checkAuthStatus } from '../middleware/auth.js';
 import { v4 as uuidv4 } from 'uuid';
 

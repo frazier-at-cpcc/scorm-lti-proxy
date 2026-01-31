@@ -102,6 +102,13 @@ export async function initDatabase(): Promise<void> {
         UNIQUE(suite_id, course_id)
       );
 
+      -- Settings (Key-Value store for runtime configuration)
+      CREATE TABLE IF NOT EXISTS settings (
+        key VARCHAR(255) PRIMARY KEY,
+        value TEXT NOT NULL,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+
       -- Indexes
       CREATE INDEX IF NOT EXISTS idx_launches_user ON launches(user_id, course_id);
       CREATE INDEX IF NOT EXISTS idx_attempts_launch ON attempts(launch_id);
