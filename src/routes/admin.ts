@@ -15,7 +15,7 @@ export const adminRouter = Router();
 // File upload configuration
 const upload = multer({
   dest: path.join(process.cwd(), 'uploads'),
-  limits: { fileSize: 100 * 1024 * 1024 }, // 100MB
+  limits: { fileSize: 500 * 1024 * 1024 }, // 500MB
 });
 
 // === Authentication Routes (public) ===
@@ -170,7 +170,7 @@ adminRouter.delete('/api/consumers/:id', requireAuth, async (req: Request, res: 
 
 // === Course Management ===
 
-// List courses
+// List courses (only active/non-deleted courses)
 adminRouter.get('/api/courses', requireAuth, async (_req: Request, res: Response) => {
   try {
     const result = await query<{
@@ -180,7 +180,7 @@ adminRouter.get('/api/courses', requireAuth, async (_req: Request, res: Response
       active: boolean;
       created_at: Date;
     }>(
-      'SELECT id, title, scorm_version, active, created_at FROM courses ORDER BY created_at DESC'
+      'SELECT id, title, scorm_version, active, created_at FROM courses WHERE active = true ORDER BY created_at DESC'
     );
     res.json(result.rows);
   } catch (error) {
