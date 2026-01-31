@@ -82,10 +82,31 @@ export async function initDatabase(): Promise<void> {
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
 
+      -- Suites (Course Collections for IMSCC export)
+      CREATE TABLE IF NOT EXISTS suites (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        title VARCHAR(255) NOT NULL,
+        description TEXT,
+        active BOOLEAN DEFAULT true,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+
+      -- Suite Courses (Junction table with ordering)
+      CREATE TABLE IF NOT EXISTS suite_courses (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        suite_id UUID REFERENCES suites(id) ON DELETE CASCADE,
+        course_id UUID REFERENCES courses(id) ON DELETE CASCADE,
+        sort_order INTEGER DEFAULT 0,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(suite_id, course_id)
+      );
+
       -- Indexes
       CREATE INDEX IF NOT EXISTS idx_launches_user ON launches(user_id, course_id);
       CREATE INDEX IF NOT EXISTS idx_attempts_launch ON attempts(launch_id);
       CREATE INDEX IF NOT EXISTS idx_dispatch_tokens_token ON dispatch_tokens(token);
+      CREATE INDEX IF NOT EXISTS idx_suite_courses_suite ON suite_courses(suite_id);
     `);
 
     console.log('Database tables initialized');
