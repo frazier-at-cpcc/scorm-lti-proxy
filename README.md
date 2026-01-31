@@ -13,7 +13,8 @@ A Node.js server that hosts SCORM content centrally and provides two integration
 - Generate thin SCORM dispatch packages for distribution
 - xAPI statement generation for dispatch mode
 - Multi-tenant support (multiple LMS consumers)
-- Admin API for content and consumer management
+- **Web-based Admin Dashboard** with authentication
+- RESTful Admin API for programmatic access
 
 ## Quick Start
 
@@ -46,12 +47,35 @@ npm run dev
 export POSTGRES_PASSWORD=secure-password
 export SESSION_SECRET=your-secret-key
 export BASE_URL=https://your-domain.com
+export ADMIN_USERNAME=admin
+export ADMIN_PASSWORD=your-secure-password
 
 # Start services
 docker-compose up -d
 ```
 
+## Admin Dashboard
+
+The admin dashboard is available at `http://localhost:3000/admin` and provides:
+
+- **Dashboard** - Overview stats (consumers, courses, launches, completions)
+- **Consumers** - Manage LTI consumers, view credentials
+- **Courses** - Upload SCORM packages, download dispatch packages
+- **Launch History** - View recent learner activity
+
+### Default Login
+
+| Setting | Default Value |
+|---------|---------------|
+| URL | `http://localhost:3000/admin/login` |
+| Username | `admin` |
+| Password | `admin123` |
+
+**Change these in production** by setting `ADMIN_USERNAME` and `ADMIN_PASSWORD` environment variables.
+
 ## API Endpoints
+
+All `/admin/api/*` endpoints require authentication (session cookie from login).
 
 ### LTI Integration
 
@@ -67,20 +91,23 @@ docker-compose up -d
 | `/dispatch/launch/:token` | GET | Launch content via dispatch token |
 | `/dispatch/package/:courseId` | GET | Get dispatch package info |
 
-### Admin API
+### Admin API (requires authentication)
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/admin/consumers` | GET | List all consumers |
-| `/admin/consumers` | POST | Create new consumer (returns LTI credentials) |
-| `/admin/consumers/:id` | GET | Get consumer details with credentials |
-| `/admin/courses` | GET | List all courses |
-| `/admin/courses` | POST | Upload SCORM package (multipart/form-data) |
-| `/admin/courses/:id` | GET | Get course details |
-| `/admin/courses/:id` | DELETE | Soft-delete course |
-| `/admin/dispatch/download/:courseId` | GET | Download dispatch package |
-| `/admin/stats` | GET | Get usage statistics |
-| `/admin/launches` | GET | List recent launches |
+| `/admin/login` | POST | Login (form: username, password) |
+| `/admin/logout` | GET/POST | Logout |
+| `/admin/api/stats` | GET | Get usage statistics |
+| `/admin/api/consumers` | GET | List all consumers |
+| `/admin/api/consumers` | POST | Create new consumer |
+| `/admin/api/consumers/:id` | GET | Get consumer with credentials |
+| `/admin/api/consumers/:id` | DELETE | Delete consumer |
+| `/admin/api/courses` | GET | List all courses |
+| `/admin/api/courses` | POST | Upload SCORM package (multipart) |
+| `/admin/api/courses/:id` | GET | Get course details |
+| `/admin/api/courses/:id` | DELETE | Delete course |
+| `/admin/api/dispatch/download/:courseId` | GET | Download dispatch package |
+| `/admin/api/launches` | GET | List recent launches |
 
 ### SCORM Runtime API
 
@@ -93,10 +120,27 @@ docker-compose up -d
 
 ## Usage Guide
 
-### 1. Create a Consumer (Customer)
+### Using the Web UI (Recommended)
+
+1. Go to `http://localhost:3000/admin/login`
+2. Login with admin credentials
+3. Use the dashboard to:
+   - **Add Consumers** - Click "Add Consumer", enter name, get LTI credentials
+   - **Upload Courses** - Click "Upload Course", select SCORM zip
+   - **Generate Dispatch** - Click "Dispatch" on any course, select consumer
+   - **View Activity** - Check "Launch History" tab
+
+### Using the API
+
+#### 1. Create a Consumer (Customer)
 
 ```bash
-curl -X POST http://localhost:3000/admin/consumers \
+# First login to get session cookie
+curl -c cookies.txt -X POST http://localhost:3000/admin/login \
+  -d "username=admin&password=admin123"
+
+# Create consumer
+curl -b cookies.txt -X POST http://localhost:3000/admin/api/consumers \
   -H "Content-Type: application/json" \
   -d '{"name": "Acme University"}'
 ```
@@ -112,15 +156,15 @@ Response:
 }
 ```
 
-### 2. Upload a SCORM Course
+#### 2. Upload a SCORM Course
 
 ```bash
-curl -X POST http://localhost:3000/admin/courses \
+curl -b cookies.txt -X POST http://localhost:3000/admin/api/courses \
   -F "package=@my-course.zip" \
   -F "title=Introduction to Safety"
 ```
 
-### 3. Configure LTI in Customer's LMS
+#### 3. Configure LTI in Customer's LMS
 
 Provide the customer with:
 - **Launch URL**: `https://your-server.com/lti/launch`
@@ -128,12 +172,13 @@ Provide the customer with:
 - **Consumer Secret**: From step 1
 - **Custom Parameter**: `course_id=<uuid from step 2>`
 
-### 4. Alternative: Generate Dispatch Package
+#### 4. Alternative: Generate Dispatch Package
 
 For customers who can't use LTI:
 
 ```bash
-curl "http://localhost:3000/admin/dispatch/download/{courseId}?consumerId={consumerId}" \
+curl -b cookies.txt \
+  "http://localhost:3000/admin/api/dispatch/download/{courseId}?consumerId={consumerId}" \
   --output course-dispatch.zip
 ```
 
@@ -177,6 +222,8 @@ The customer uploads this thin package to their LMS. When launched, it redirects
 | `BASE_URL` | Public URL of the server | http://localhost:3000 |
 | `DATABASE_URL` | PostgreSQL connection string | - |
 | `SESSION_SECRET` | Secret for session signing | - |
+| `ADMIN_USERNAME` | Admin login username | admin |
+| `ADMIN_PASSWORD` | Admin login password | admin123 |
 | `CONTENT_DIR` | Directory for SCORM content | ./content |
 | `XAPI_LRS_ENDPOINT` | Default xAPI LRS endpoint | - |
 | `XAPI_LRS_KEY` | Default LRS auth key | - |
