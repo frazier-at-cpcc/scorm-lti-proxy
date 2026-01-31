@@ -1,0 +1,323 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SCORM Player</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+    html, body {
+      height: 100%;
+      overflow: hidden;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    }
+    .loading {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      height: 100%;
+      background: #f5f5f5;
+    }
+    .loading-content {
+      text-align: center;
+    }
+    .spinner {
+      width: 50px;
+      height: 50px;
+      border: 4px solid #e0e0e0;
+      border-top-color: #3498db;
+      border-radius: 50%;
+      animation: spin 1s linear infinite;
+      margin: 0 auto 20px;
+    }
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+    .error {
+      background: #fee;
+      color: #c00;
+      padding: 20px;
+      text-align: center;
+    }
+    #content-frame {
+      width: 100%;
+      height: 100%;
+      border: none;
+      display: none;
+    }
+    .hidden {
+      display: none !important;
+    }
+  </style>
+</head>
+<body>
+  <div id="loading" class="loading">
+    <div class="loading-content">
+      <div class="spinner"></div>
+      <p>Loading course...</p>
+    </div>
+  </div>
+
+  <div id="error" class="error hidden"></div>
+
+  <iframe id="content-frame" allowfullscreen></iframe>
+
+  <!-- SCORM RTE will be created dynamically -->
+  <script>
+    (function() {
+      // Get parameters from URL
+      const params = new URLSearchParams(window.location.search);
+      const attemptId = params.get('attemptId');
+      const courseId = params.get('courseId');
+      const mode = params.get('mode') || 'lti';
+
+      if (!attemptId || !courseId) {
+        showError('Missing required parameters');
+        return;
+      }
+
+      // API base URL
+      const apiBase = window.location.origin + '/api/scorm';
+
+      // State
+      let courseData = null;
+      let attemptData = null;
+      let cmiData = {};
+      let initialized = false;
+      let finished = false;
+      let commitTimeout = null;
+
+      // SCORM 1.2 API Implementation
+      window.API = {
+        LMSInitialize: function(param) {
+          console.log('LMSInitialize called');
+          if (initialized) {
+            this._errorCode = '101'; // Already initialized
+            return 'false';
+          }
+          initialized = true;
+          this._errorCode = '0';
+          return 'true';
+        },
+
+        LMSFinish: function(param) {
+          console.log('LMSFinish called');
+          if (!initialized) {
+            this._errorCode = '301'; // Not initialized
+            return 'false';
+          }
+          if (finished) {
+            this._errorCode = '101'; // Already finished
+            return 'false';
+          }
+
+          // Final commit
+          this.LMSCommit('');
+
+          // Mark finished
+          finished = true;
+          fetch(apiBase + '/attempt/' + attemptId + '/finish', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' }
+          }).catch(console.error);
+
+          this._errorCode = '0';
+          return 'true';
+        },
+
+        LMSGetValue: function(element) {
+          console.log('LMSGetValue:', element);
+          if (!initialized) {
+            this._errorCode = '301';
+            return '';
+          }
+
+          // Return from local cache
+          const value = cmiData[element];
+          if (value !== undefined) {
+            this._errorCode = '0';
+            return String(value);
+          }
+
+          // Default values
+          const defaults = {
+            'cmi.core.student_id': attemptData?.launch_id || 'unknown',
+            'cmi.core.student_name': 'Learner',
+            'cmi.core.lesson_status': 'not attempted',
+            'cmi.core.entry': attemptData?.cmi_data ? 'resume' : 'ab-initio',
+            'cmi.core.credit': 'credit',
+            'cmi.core.lesson_mode': 'normal',
+            'cmi.core.total_time': '0000:00:00',
+            'cmi.core.score.raw': '',
+            'cmi.core.score.min': '0',
+            'cmi.core.score.max': '100',
+            'cmi.suspend_data': '',
+            'cmi.launch_data': '',
+            'cmi.core.lesson_location': ''
+          };
+
+          if (defaults.hasOwnProperty(element)) {
+            this._errorCode = '0';
+            return defaults[element];
+          }
+
+          // Children counts
+          if (element === 'cmi.objectives._count') {
+            this._errorCode = '0';
+            return '0';
+          }
+          if (element === 'cmi.interactions._count') {
+            this._errorCode = '0';
+            return '0';
+          }
+
+          this._errorCode = '401'; // Not implemented
+          return '';
+        },
+
+        LMSSetValue: function(element, value) {
+          console.log('LMSSetValue:', element, '=', value);
+          if (!initialized) {
+            this._errorCode = '301';
+            return 'false';
+          }
+          if (finished) {
+            this._errorCode = '101';
+            return 'false';
+          }
+
+          // Store in local cache
+          cmiData[element] = value;
+          this._errorCode = '0';
+
+          // Schedule auto-commit
+          if (commitTimeout) clearTimeout(commitTimeout);
+          commitTimeout = setTimeout(() => this.LMSCommit(''), 2000);
+
+          return 'true';
+        },
+
+        LMSCommit: function(param) {
+          console.log('LMSCommit called');
+          if (!initialized) {
+            this._errorCode = '301';
+            return 'false';
+          }
+
+          // Clear any pending commit
+          if (commitTimeout) {
+            clearTimeout(commitTimeout);
+            commitTimeout = null;
+          }
+
+          // Send to server
+          fetch(apiBase + '/attempt/' + attemptId + '/commit', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(cmiData)
+          }).then(response => {
+            if (!response.ok) {
+              console.error('Commit failed:', response.status);
+            }
+          }).catch(console.error);
+
+          this._errorCode = '0';
+          return 'true';
+        },
+
+        LMSGetLastError: function() {
+          return this._errorCode || '0';
+        },
+
+        LMSGetErrorString: function(errorCode) {
+          const errors = {
+            '0': 'No error',
+            '101': 'General exception',
+            '201': 'Invalid argument error',
+            '202': 'Element cannot have children',
+            '203': 'Element not an array',
+            '301': 'Not initialized',
+            '401': 'Not implemented error',
+            '402': 'Invalid set value',
+            '403': 'Element is read only',
+            '404': 'Element is write only',
+            '405': 'Incorrect data type'
+          };
+          return errors[errorCode] || 'Unknown error';
+        },
+
+        LMSGetDiagnostic: function(errorCode) {
+          return this.LMSGetErrorString(errorCode);
+        },
+
+        _errorCode: '0'
+      };
+
+      // SCORM 2004 API (alias to 1.2 for basic compatibility)
+      window.API_1484_11 = {
+        Initialize: function(p) { return window.API.LMSInitialize(p); },
+        Terminate: function(p) { return window.API.LMSFinish(p); },
+        GetValue: function(e) { return window.API.LMSGetValue(e); },
+        SetValue: function(e, v) { return window.API.LMSSetValue(e, v); },
+        Commit: function(p) { return window.API.LMSCommit(p); },
+        GetLastError: function() { return window.API.LMSGetLastError(); },
+        GetErrorString: function(e) { return window.API.LMSGetErrorString(e); },
+        GetDiagnostic: function(e) { return window.API.LMSGetDiagnostic(e); }
+      };
+
+      // Load course and attempt data
+      async function loadData() {
+        try {
+          // Load course info
+          const courseResponse = await fetch(apiBase + '/course/' + courseId);
+          if (!courseResponse.ok) throw new Error('Course not found');
+          courseData = await courseResponse.json();
+
+          // Load attempt data (for resume)
+          const attemptResponse = await fetch(apiBase + '/attempt/' + attemptId);
+          if (attemptResponse.ok) {
+            attemptData = await attemptResponse.json();
+            if (attemptData.cmi_data) {
+              cmiData = attemptData.cmi_data;
+            }
+          }
+
+          // Build content URL
+          const contentUrl = window.location.origin + '/content/' +
+            courseId + '/' + courseData.launch_path;
+
+          // Show iframe and load content
+          document.getElementById('loading').classList.add('hidden');
+          const frame = document.getElementById('content-frame');
+          frame.style.display = 'block';
+          frame.src = contentUrl;
+
+        } catch (error) {
+          showError(error.message);
+        }
+      }
+
+      function showError(message) {
+        document.getElementById('loading').classList.add('hidden');
+        const errorDiv = document.getElementById('error');
+        errorDiv.textContent = 'Error: ' + message;
+        errorDiv.classList.remove('hidden');
+      }
+
+      // Handle page unload
+      window.addEventListener('beforeunload', function() {
+        if (initialized && !finished) {
+          window.API.LMSCommit('');
+        }
+      });
+
+      // Start loading
+      loadData();
+    })();
+  </script>
+</body>
+</html>
