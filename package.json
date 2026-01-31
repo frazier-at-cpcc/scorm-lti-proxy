@@ -1,0 +1,47 @@
+{
+  "name": "scorm-lti-proxy",
+  "version": "1.0.0",
+  "description": "SCORM content hosting with LTI 1.1 grade passback and xAPI dispatch support",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "tsx watch src/index.ts",
+    "migrate": "node-pg-migrate",
+    "test": "vitest"
+  },
+  "keywords": [
+    "scorm",
+    "lti",
+    "xapi",
+    "lms",
+    "elearning"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "adm-zip": "^0.5.16",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "ims-lti": "^3.0.2",
+    "multer": "^1.4.5-lts.1",
+    "node-pg-migrate": "^7.9.1",
+    "pg": "^8.13.1",
+    "uuid": "^11.0.5",
+    "xml2js": "^0.6.2"
+  },
+  "devDependencies": {
+    "@types/adm-zip": "^0.5.7",
+    "@types/cors": "^2.8.17",
+    "@types/express": "^5.0.0",
+    "@types/multer": "^1.4.12",
+    "@types/node": "^22.10.10",
+    "@types/pg": "^8.11.10",
+    "@types/uuid": "^10.0.0",
+    "@types/xml2js": "^0.4.14",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3",
+    "vitest": "^3.0.4"
+  }
+}
