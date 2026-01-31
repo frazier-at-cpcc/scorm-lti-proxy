@@ -109,8 +109,10 @@ All `/admin/api/*` endpoints require authentication (session cookie from login).
 | `/admin/api/consumers/:id` | DELETE | Delete consumer |
 | `/admin/api/courses` | GET | List all courses |
 | `/admin/api/courses` | POST | Upload SCORM package (multipart) |
+| `/admin/api/courses/bulk` | POST | Bulk upload multiple SCORM packages |
 | `/admin/api/courses/:id` | GET | Get course details |
 | `/admin/api/courses/:id` | DELETE | Delete course |
+| `/admin/api/courses/:id/replace` | PUT | Replace course SCORM package |
 | `/admin/api/dispatch/download/:courseId` | GET | Download dispatch package |
 | `/admin/api/launches` | GET | List recent launches |
 | `/admin/api/suites` | GET | List all course suites |
@@ -177,6 +179,22 @@ Response:
 curl -b cookies.txt -X POST http://localhost:3000/admin/api/courses \
   -F "package=@my-course.zip" \
   -F "title=Introduction to Safety"
+```
+
+**Bulk Upload** - Upload multiple packages at once:
+
+```bash
+curl -b cookies.txt -X POST http://localhost:3000/admin/api/courses/bulk \
+  -F "packages=@course1.zip" \
+  -F "packages=@course2.zip" \
+  -F "packages=@course3.zip"
+```
+
+**Replace Package** - Update an existing course with a new SCORM package:
+
+```bash
+curl -b cookies.txt -X PUT http://localhost:3000/admin/api/courses/{courseId}/replace \
+  -F "package=@updated-course.zip"
 ```
 
 #### 3. Configure LTI in Customer's LMS

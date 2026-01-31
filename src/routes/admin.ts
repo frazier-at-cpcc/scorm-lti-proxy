@@ -274,7 +274,7 @@ adminRouter.get('/api/courses/:id', requireAuth, async (req: Request, res: Respo
   }
 });
 
-// Delete course
+// Delete course (full deletion - removes database records and content files)
 adminRouter.delete('/api/courses/:id', requireAuth, async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
@@ -288,13 +288,185 @@ adminRouter.delete('/api/courses/:id', requireAuth, async (req: Request, res: Re
       return res.status(404).json({ error: 'Course not found' });
     }
 
-    // Soft delete
-    await query('UPDATE courses SET active = false WHERE id = $1', [id]);
+    const contentPath = courseResult.rows[0].content_path;
 
-    res.json({ success: true });
+    // Delete related records first (respecting foreign key constraints)
+    // Delete attempts (via launches)
+    await query(
+      `DELETE FROM attempts WHERE launch_id IN (SELECT id FROM launches WHERE course_id = $1)`,
+      [id]
+    );
+
+    // Delete launches
+    await query('DELETE FROM launches WHERE course_id = $1', [id]);
+
+    // Delete dispatch tokens
+    await query('DELETE FROM dispatch_tokens WHERE course_id = $1', [id]);
+
+    // Remove from suites
+    await query('DELETE FROM suite_courses WHERE course_id = $1', [id]);
+
+    // Delete the course record
+    await query('DELETE FROM courses WHERE id = $1', [id]);
+
+    // Delete content directory from filesystem
+    if (contentPath) {
+      fs.rm(contentPath, { recursive: true, force: true }).catch(err => {
+        console.error('Failed to remove content directory:', err);
+      });
+    }
+
+    res.json({ success: true, message: 'Course and all related data deleted' });
   } catch (error) {
     console.error('Delete course error:', error);
     res.status(500).json({ error: 'Failed to delete course' });
+  }
+});
+
+// Bulk upload SCORM packages
+adminRouter.post('/api/courses/bulk', requireAuth, upload.array('packages', 50), async (req: Request, res: Response) => {
+  const files = req.files as Express.Multer.File[];
+  const results: { filename: string; success: boolean; id?: string; title?: string; error?: string }[] = [];
+
+  if (!files || files.length === 0) {
+    return res.status(400).json({ error: 'No files uploaded' });
+  }
+
+  for (const file of files) {
+    try {
+      const courseId = uuidv4();
+      const contentPath = path.join(config.content.dir, courseId);
+
+      // Extract SCORM package
+      await extractScormPackage(file.path, contentPath);
+
+      // Parse manifest
+      const manifestPath = path.join(contentPath, 'imsmanifest.xml');
+      const manifest = await parseManifest(manifestPath);
+
+      // Create course record
+      await query(
+        `INSERT INTO courses (id, title, scorm_version, launch_path, manifest_data, content_path)
+         VALUES ($1, $2, $3, $4, $5, $6)`,
+        [
+          courseId,
+          manifest.title || file.originalname.replace(/\.zip$/i, ''),
+          manifest.scormVersion,
+          manifest.launchPath,
+          JSON.stringify(manifest),
+          contentPath,
+        ]
+      );
+
+      // Clean up uploaded file
+      await fs.unlink(file.path);
+
+      results.push({
+        filename: file.originalname,
+        success: true,
+        id: courseId,
+        title: manifest.title,
+      });
+    } catch (error) {
+      console.error(`Bulk upload error for ${file.originalname}:`, error);
+
+      // Clean up on error
+      await fs.unlink(file.path).catch(() => {});
+
+      results.push({
+        filename: file.originalname,
+        success: false,
+        error: error instanceof Error ? error.message : 'Upload failed',
+      });
+    }
+  }
+
+  const successCount = results.filter(r => r.success).length;
+  const failCount = results.filter(r => !r.success).length;
+
+  res.json({
+    message: `Uploaded ${successCount} of ${files.length} packages`,
+    successCount,
+    failCount,
+    results,
+  });
+});
+
+// Replace SCORM package for existing course
+adminRouter.put('/api/courses/:id/replace', requireAuth, upload.single('package'), async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+
+    if (!req.file) {
+      return res.status(400).json({ error: 'No file uploaded' });
+    }
+
+    // Get existing course
+    const courseResult = await query<{ id: string; content_path: string; title: string }>(
+      'SELECT id, content_path, title FROM courses WHERE id = $1',
+      [id]
+    );
+
+    if (courseResult.rows.length === 0) {
+      await fs.unlink(req.file.path).catch(() => {});
+      return res.status(404).json({ error: 'Course not found' });
+    }
+
+    const existingCourse = courseResult.rows[0];
+    const oldContentPath = existingCourse.content_path;
+
+    // Create new content path with timestamp to avoid conflicts
+    const newContentPath = path.join(config.content.dir, `${id}_${Date.now()}`);
+
+    // Extract new SCORM package
+    await extractScormPackage(req.file.path, newContentPath);
+
+    // Parse manifest
+    const manifestPath = path.join(newContentPath, 'imsmanifest.xml');
+    const manifest = await parseManifest(manifestPath);
+
+    // Update course record
+    await query(
+      `UPDATE courses SET
+         scorm_version = $1,
+         launch_path = $2,
+         manifest_data = $3,
+         content_path = $4,
+         updated_at = CURRENT_TIMESTAMP
+       WHERE id = $5`,
+      [
+        manifest.scormVersion,
+        manifest.launchPath,
+        JSON.stringify(manifest),
+        newContentPath,
+        id,
+      ]
+    );
+
+    // Clean up uploaded file
+    await fs.unlink(req.file.path);
+
+    // Remove old content directory (async, don't wait)
+    fs.rm(oldContentPath, { recursive: true, force: true }).catch(err => {
+      console.error('Failed to remove old content:', err);
+    });
+
+    res.json({
+      success: true,
+      id,
+      title: existingCourse.title,
+      scorm_version: manifest.scormVersion,
+      launch_path: manifest.launchPath,
+    });
+  } catch (error) {
+    console.error('Replace course error:', error);
+
+    // Clean up on error
+    if (req.file) {
+      await fs.unlink(req.file.path).catch(() => {});
+    }
+
+    res.status(500).json({ error: 'Failed to replace course package' });
   }
 });
 
@@ -1118,7 +1290,10 @@ function getDashboardPage(): string {
       <div class="card">
         <div class="card-header">
           <h2>Courses</h2>
-          <button class="btn btn-primary" onclick="showUploadCourseModal()">Upload Course</button>
+          <div style="display: flex; gap: 8px;">
+            <button class="btn btn-primary" onclick="showUploadCourseModal()">Upload Course</button>
+            <button class="btn btn-secondary" onclick="showBulkUploadModal()">Bulk Upload</button>
+          </div>
         </div>
         <div class="card-body">
           <table>
@@ -1284,6 +1459,52 @@ function getDashboardPage(): string {
         <div class="form-actions">
           <button type="button" class="btn btn-secondary" onclick="closeModal('uploadCourseModal')">Cancel</button>
           <button type="submit" class="btn btn-primary">Upload</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Bulk Upload Modal -->
+  <div id="bulkUploadModal" class="modal">
+    <div class="modal-content">
+      <h2>Bulk Upload SCORM Courses</h2>
+      <p style="color: #666; margin-bottom: 16px;">Select multiple SCORM packages (.zip files) to upload at once. Course titles will be extracted from the manifest.</p>
+      <form id="bulkUploadForm" enctype="multipart/form-data">
+        <div class="form-group">
+          <label>SCORM Packages *</label>
+          <input type="file" name="packages" accept=".zip" multiple required style="padding: 20px; border: 2px dashed #e0e0e0; border-radius: 8px; width: 100%; cursor: pointer;">
+        </div>
+        <div id="bulk-upload-status" style="display: none; margin-bottom: 16px;">
+          <div style="background: #f8f9fa; border-radius: 8px; padding: 16px;">
+            <div id="bulk-upload-progress" style="margin-bottom: 8px;">Uploading...</div>
+            <div id="bulk-upload-results"></div>
+          </div>
+        </div>
+        <div class="form-actions">
+          <button type="button" class="btn btn-secondary" onclick="closeModal('bulkUploadModal')">Cancel</button>
+          <button type="submit" class="btn btn-primary" id="bulk-upload-btn">Upload All</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Replace Course Modal -->
+  <div id="replaceCourseModal" class="modal">
+    <div class="modal-content">
+      <h2>Replace SCORM Package</h2>
+      <p style="color: #666; margin-bottom: 16px;">Upload a new SCORM package to replace the existing content for: <strong id="replace-course-title"></strong></p>
+      <form id="replaceCourseForm" enctype="multipart/form-data">
+        <input type="hidden" id="replace-course-id">
+        <div class="form-group">
+          <label>New SCORM Package *</label>
+          <input type="file" name="package" accept=".zip" required>
+        </div>
+        <p style="color: #856404; background: #fff3cd; padding: 12px; border-radius: 8px; font-size: 13px; margin-bottom: 16px;">
+          Warning: This will replace the course content. Existing learner progress will be preserved, but may not be compatible with the new content.
+        </p>
+        <div class="form-actions">
+          <button type="button" class="btn btn-secondary" onclick="closeModal('replaceCourseModal')">Cancel</button>
+          <button type="submit" class="btn btn-primary">Replace Package</button>
         </div>
       </form>
     </div>
@@ -1459,6 +1680,7 @@ function getDashboardPage(): string {
             <td><span class="badge \${c.active ? 'badge-success' : 'badge-warning'}">\${c.active ? 'Active' : 'Inactive'}</span></td>
             <td>\${new Date(c.created_at).toLocaleDateString()}</td>
             <td>
+              <button class="btn btn-sm btn-secondary" onclick="showReplaceModal('\${c.id}', '\${escapeHtml(c.title).replace(/'/g, "\\\\'")}')">Replace</button>
               <button class="btn btn-sm btn-secondary" onclick="showDispatchModal('\${c.id}')">Dispatch</button>
               <button class="btn btn-sm btn-danger" onclick="deleteCourse('\${c.id}')">Delete</button>
             </td>
@@ -1631,6 +1853,89 @@ function getDashboardPage(): string {
         alert('Failed to delete course');
       }
     }
+
+    // === Bulk Upload Functions ===
+
+    function showBulkUploadModal() {
+      document.getElementById('bulkUploadForm').reset();
+      document.getElementById('bulk-upload-status').style.display = 'none';
+      document.getElementById('bulk-upload-btn').disabled = false;
+      document.getElementById('bulkUploadModal').classList.add('active');
+    }
+
+    document.getElementById('bulkUploadForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const formData = new FormData(e.target);
+      const statusDiv = document.getElementById('bulk-upload-status');
+      const progressDiv = document.getElementById('bulk-upload-progress');
+      const resultsDiv = document.getElementById('bulk-upload-results');
+      const btn = document.getElementById('bulk-upload-btn');
+
+      statusDiv.style.display = 'block';
+      progressDiv.textContent = 'Uploading packages...';
+      resultsDiv.innerHTML = '';
+      btn.disabled = true;
+
+      try {
+        const res = await fetch('/admin/api/courses/bulk', {
+          method: 'POST',
+          body: formData
+        });
+
+        const data = await res.json();
+
+        if (!res.ok) {
+          throw new Error(data.error || 'Upload failed');
+        }
+
+        progressDiv.textContent = data.message;
+        resultsDiv.innerHTML = data.results.map(r =>
+          \`<div style="padding: 4px 0; color: \${r.success ? '#155724' : '#721c24'};">
+            \${r.success ? '✓' : '✗'} \${escapeHtml(r.filename)}\${r.success ? ' → ' + escapeHtml(r.title) : ' - ' + escapeHtml(r.error)}
+          </div>\`
+        ).join('');
+
+        loadCourses();
+        loadStats();
+      } catch (e) {
+        progressDiv.textContent = 'Upload failed: ' + e.message;
+      }
+
+      btn.disabled = false;
+    });
+
+    // === Replace Course Functions ===
+
+    function showReplaceModal(courseId, courseTitle) {
+      document.getElementById('replaceCourseForm').reset();
+      document.getElementById('replace-course-id').value = courseId;
+      document.getElementById('replace-course-title').textContent = courseTitle;
+      document.getElementById('replaceCourseModal').classList.add('active');
+    }
+
+    document.getElementById('replaceCourseForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const courseId = document.getElementById('replace-course-id').value;
+      const formData = new FormData(e.target);
+
+      try {
+        const res = await fetch('/admin/api/courses/' + courseId + '/replace', {
+          method: 'PUT',
+          body: formData
+        });
+
+        if (!res.ok) {
+          const data = await res.json();
+          throw new Error(data.error || 'Replace failed');
+        }
+
+        closeModal('replaceCourseModal');
+        loadCourses();
+        alert('Course package replaced successfully!');
+      } catch (e) {
+        alert('Failed to replace course: ' + e.message);
+      }
+    });
 
     function copyToClipboard(elementId) {
       const text = document.getElementById(elementId).textContent;
