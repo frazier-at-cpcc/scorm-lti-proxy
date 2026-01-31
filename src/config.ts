@@ -27,5 +27,10 @@ export const config = {
     secret: process.env.SESSION_SECRET || 'dev-secret-change-in-production',
   },
 
+  admin: {
+    username: process.env.ADMIN_USERNAME || 'admin',
+    password: process.env.ADMIN_PASSWORD || 'admin123',
+  },
+
   isDev: process.env.NODE_ENV !== 'production',
 };
