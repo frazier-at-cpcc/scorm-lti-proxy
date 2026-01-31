@@ -392,6 +392,336 @@ adminRouter.get('/api/launches', requireAuth, async (req: Request, res: Response
   }
 });
 
+// === Suite Management ===
+
+// List suites
+adminRouter.get('/api/suites', requireAuth, async (_req: Request, res: Response) => {
+  try {
+    const result = await query<{
+      id: string;
+      title: string;
+      description: string | null;
+      active: boolean;
+      created_at: Date;
+      course_count: string;
+    }>(
+      `SELECT s.id, s.title, s.description, s.active, s.created_at,
+              COUNT(sc.course_id) as course_count
+       FROM suites s
+       LEFT JOIN suite_courses sc ON s.id = sc.suite_id
+       WHERE s.active = true
+       GROUP BY s.id
+       ORDER BY s.created_at DESC`
+    );
+    res.json(result.rows);
+  } catch (error) {
+    console.error('List suites error:', error);
+    res.status(500).json({ error: 'Failed to list suites' });
+  }
+});
+
+// Create suite
+adminRouter.post('/api/suites', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const { title, description } = req.body;
+
+    if (!title) {
+      return res.status(400).json({ error: 'title is required' });
+    }
+
+    const id = uuidv4();
+    await query(
+      'INSERT INTO suites (id, title, description) VALUES ($1, $2, $3)',
+      [id, title, description || null]
+    );
+
+    res.status(201).json({ id, title, description });
+  } catch (error) {
+    console.error('Create suite error:', error);
+    res.status(500).json({ error: 'Failed to create suite' });
+  }
+});
+
+// Get suite details with courses
+adminRouter.get('/api/suites/:id', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+
+    const suiteResult = await query<{
+      id: string;
+      title: string;
+      description: string | null;
+      active: boolean;
+      created_at: Date;
+    }>(
+      'SELECT id, title, description, active, created_at FROM suites WHERE id = $1',
+      [id]
+    );
+
+    if (suiteResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Suite not found' });
+    }
+
+    const coursesResult = await query<{
+      id: string;
+      title: string;
+      scorm_version: string;
+      sort_order: number;
+    }>(
+      `SELECT c.id, c.title, c.scorm_version, sc.sort_order
+       FROM courses c
+       JOIN suite_courses sc ON c.id = sc.course_id
+       WHERE sc.suite_id = $1 AND c.active = true
+       ORDER BY sc.sort_order`,
+      [id]
+    );
+
+    res.json({
+      ...suiteResult.rows[0],
+      courses: coursesResult.rows,
+    });
+  } catch (error) {
+    console.error('Get suite error:', error);
+    res.status(500).json({ error: 'Failed to get suite' });
+  }
+});
+
+// Update suite
+adminRouter.put('/api/suites/:id', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const { title, description } = req.body;
+
+    await query(
+      'UPDATE suites SET title = COALESCE($1, title), description = $2, updated_at = CURRENT_TIMESTAMP WHERE id = $3',
+      [title, description, id]
+    );
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Update suite error:', error);
+    res.status(500).json({ error: 'Failed to update suite' });
+  }
+});
+
+// Delete suite
+adminRouter.delete('/api/suites/:id', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    await query('UPDATE suites SET active = false WHERE id = $1', [id]);
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Delete suite error:', error);
+    res.status(500).json({ error: 'Failed to delete suite' });
+  }
+});
+
+// Add course to suite
+adminRouter.post('/api/suites/:id/courses', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const { courseId } = req.body;
+
+    if (!courseId) {
+      return res.status(400).json({ error: 'courseId is required' });
+    }
+
+    // Get next sort order
+    const orderResult = await query<{ max_order: number | null }>(
+      'SELECT MAX(sort_order) as max_order FROM suite_courses WHERE suite_id = $1',
+      [id]
+    );
+    const nextOrder = (orderResult.rows[0]?.max_order || 0) + 1;
+
+    await query(
+      'INSERT INTO suite_courses (suite_id, course_id, sort_order) VALUES ($1, $2, $3) ON CONFLICT (suite_id, course_id) DO NOTHING',
+      [id, courseId, nextOrder]
+    );
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Add course to suite error:', error);
+    res.status(500).json({ error: 'Failed to add course to suite' });
+  }
+});
+
+// Remove course from suite
+adminRouter.delete('/api/suites/:id/courses/:courseId', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const { id, courseId } = req.params;
+    await query('DELETE FROM suite_courses WHERE suite_id = $1 AND course_id = $2', [id, courseId]);
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Remove course from suite error:', error);
+    res.status(500).json({ error: 'Failed to remove course from suite' });
+  }
+});
+
+// Reorder courses in suite
+adminRouter.put('/api/suites/:id/reorder', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const { courseIds } = req.body;
+
+    if (!Array.isArray(courseIds)) {
+      return res.status(400).json({ error: 'courseIds must be an array' });
+    }
+
+    // Update sort order for each course
+    for (let i = 0; i < courseIds.length; i++) {
+      await query(
+        'UPDATE suite_courses SET sort_order = $1 WHERE suite_id = $2 AND course_id = $3',
+        [i, id, courseIds[i]]
+      );
+    }
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Reorder courses error:', error);
+    res.status(500).json({ error: 'Failed to reorder courses' });
+  }
+});
+
+// Download IMSCC for suite
+adminRouter.get('/api/suites/:id/imscc', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const { consumerId } = req.query;
+
+    if (!consumerId) {
+      return res.status(400).json({ error: 'consumerId required' });
+    }
+
+    // Get suite
+    const suiteResult = await query<{
+      id: string;
+      title: string;
+      description: string | null;
+    }>(
+      'SELECT id, title, description FROM suites WHERE id = $1 AND active = true',
+      [id]
+    );
+
+    if (suiteResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Suite not found' });
+    }
+
+    // Get consumer credentials
+    const consumerResult = await query<{
+      lti_consumer_key: string;
+      lti_consumer_secret: string;
+    }>(
+      'SELECT lti_consumer_key, lti_consumer_secret FROM consumers WHERE id = $1 AND active = true',
+      [consumerId as string]
+    );
+
+    if (consumerResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Consumer not found' });
+    }
+
+    // Get courses in suite
+    const coursesResult = await query<{
+      id: string;
+      title: string;
+      description: string | null;
+      sort_order: number;
+    }>(
+      `SELECT c.id, c.title, c.description, sc.sort_order
+       FROM courses c
+       JOIN suite_courses sc ON c.id = sc.course_id
+       WHERE sc.suite_id = $1 AND c.active = true
+       ORDER BY sc.sort_order`,
+      [id]
+    );
+
+    if (coursesResult.rows.length === 0) {
+      return res.status(400).json({ error: 'Suite has no courses' });
+    }
+
+    const suite = suiteResult.rows[0];
+    const consumer = consumerResult.rows[0];
+    const courses = coursesResult.rows.map(c => ({
+      id: c.id,
+      title: c.title,
+      description: c.description || undefined,
+      sortOrder: c.sort_order,
+    }));
+
+    // Generate IMSCC
+    const imsccBuffer = generateIMSCC(
+      { id: suite.id, title: suite.title, description: suite.description || undefined },
+      courses,
+      consumer
+    );
+
+    const filename = `${suite.title.replace(/[^a-z0-9]/gi, '_')}.imscc`;
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.send(imsccBuffer);
+  } catch (error) {
+    console.error('Download IMSCC error:', error);
+    res.status(500).json({ error: 'Failed to generate IMSCC' });
+  }
+});
+
+// === Settings ===
+
+// Get settings
+adminRouter.get('/api/settings', requireAuth, async (_req: Request, res: Response) => {
+  try {
+    const result = await query<{ key: string; value: string }>(
+      'SELECT key, value FROM settings'
+    );
+
+    const settings: Record<string, string> = {};
+    result.rows.forEach(row => {
+      settings[row.key] = row.value;
+    });
+
+    // Include current baseUrl (from config or DB)
+    if (!settings.base_url) {
+      settings.base_url = config.baseUrl;
+    }
+
+    res.json(settings);
+  } catch (error) {
+    console.error('Get settings error:', error);
+    res.status(500).json({ error: 'Failed to get settings' });
+  }
+});
+
+// Update settings
+adminRouter.put('/api/settings', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const { base_url } = req.body;
+
+    if (base_url) {
+      // Validate URL format
+      try {
+        new URL(base_url);
+      } catch {
+        return res.status(400).json({ error: 'Invalid URL format' });
+      }
+
+      // Save to database
+      await query(
+        `INSERT INTO settings (key, value, updated_at)
+         VALUES ('base_url', $1, CURRENT_TIMESTAMP)
+         ON CONFLICT (key) DO UPDATE SET value = $1, updated_at = CURRENT_TIMESTAMP`,
+        [base_url]
+      );
+
+      // Update runtime config
+      updateRuntimeConfig({ baseUrl: base_url });
+    }
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Update settings error:', error);
+    res.status(500).json({ error: 'Failed to update settings' });
+  }
+});
+
 // === Legacy routes (for backwards compatibility) ===
 // These redirect to the new /api/ prefixed routes
 
@@ -716,7 +1046,9 @@ function getDashboardPage(): string {
       <button class="tab active" data-panel="dashboard">Dashboard</button>
       <button class="tab" data-panel="consumers">Consumers</button>
       <button class="tab" data-panel="courses">Courses</button>
+      <button class="tab" data-panel="suites">Suites</button>
       <button class="tab" data-panel="launches">Launch History</button>
+      <button class="tab" data-panel="settings">Settings</button>
     </div>
 
     <!-- Dashboard Panel -->
@@ -833,6 +1165,53 @@ function getDashboardPage(): string {
         </div>
       </div>
     </div>
+
+    <!-- Suites Panel -->
+    <div id="suites" class="panel">
+      <div class="card">
+        <div class="card-header">
+          <h2>Course Suites</h2>
+          <button class="btn btn-primary" onclick="showCreateSuiteModal()">Create Suite</button>
+        </div>
+        <div class="card-body">
+          <p style="color: #666; margin-bottom: 16px;">Suites group multiple SCORM courses together for export as IMS Common Cartridge (IMSCC) files that can be imported into Canvas, Moodle, or Brightspace.</p>
+          <table>
+            <thead>
+              <tr>
+                <th>Title</th>
+                <th>Courses</th>
+                <th>Created</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="suites-table">
+              <tr><td colspan="4" class="empty-state">Loading...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- Settings Panel -->
+    <div id="settings" class="panel">
+      <div class="card">
+        <div class="card-header">
+          <h2>Server Settings</h2>
+        </div>
+        <div class="card-body">
+          <form id="settingsForm">
+            <div class="form-group">
+              <label>Base URL</label>
+              <input type="url" name="base_url" id="settings-base-url" placeholder="https://your-server.com" required>
+              <p style="color: #666; font-size: 13px; margin-top: 8px;">The public URL of this server. Used in LTI launch URLs and IMSCC exports.</p>
+            </div>
+            <div class="form-actions" style="justify-content: flex-start;">
+              <button type="submit" class="btn btn-primary">Save Settings</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
   </div>
 
   <!-- Create Consumer Modal -->
@@ -931,6 +1310,77 @@ function getDashboardPage(): string {
     </div>
   </div>
 
+  <!-- Create Suite Modal -->
+  <div id="createSuiteModal" class="modal">
+    <div class="modal-content">
+      <h2>Create New Suite</h2>
+      <form id="createSuiteForm">
+        <div class="form-group">
+          <label>Suite Title *</label>
+          <input type="text" name="title" required placeholder="e.g., Safety Training 2024">
+        </div>
+        <div class="form-group">
+          <label>Description (optional)</label>
+          <input type="text" name="description" placeholder="Brief description of this course suite">
+        </div>
+        <div class="form-actions">
+          <button type="button" class="btn btn-secondary" onclick="closeModal('createSuiteModal')">Cancel</button>
+          <button type="submit" class="btn btn-primary">Create Suite</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Manage Suite Modal -->
+  <div id="manageSuiteModal" class="modal">
+    <div class="modal-content" style="max-width: 700px;">
+      <h2 id="manage-suite-title">Manage Suite</h2>
+      <input type="hidden" id="manage-suite-id">
+
+      <div style="margin-bottom: 24px;">
+        <h3 style="font-size: 14px; color: #666; margin-bottom: 12px;">Courses in this Suite</h3>
+        <div id="suite-courses-list" style="border: 1px solid #e0e0e0; border-radius: 8px; min-height: 100px;">
+          <div class="empty-state" style="padding: 24px;">No courses yet</div>
+        </div>
+      </div>
+
+      <div style="margin-bottom: 24px;">
+        <h3 style="font-size: 14px; color: #666; margin-bottom: 12px;">Add Course</h3>
+        <div style="display: flex; gap: 12px;">
+          <select id="add-course-select" style="flex: 1; padding: 10px 14px; border: 2px solid #e0e0e0; border-radius: 8px;">
+            <option value="">Select a course to add...</option>
+          </select>
+          <button type="button" class="btn btn-primary" onclick="addCourseToSuite()">Add</button>
+        </div>
+      </div>
+
+      <div class="form-actions">
+        <button type="button" class="btn btn-secondary" onclick="closeModal('manageSuiteModal')">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Download IMSCC Modal -->
+  <div id="imsccModal" class="modal">
+    <div class="modal-content">
+      <h2>Download IMSCC</h2>
+      <p style="margin-bottom: 16px; color: #666;">Select a consumer to generate an IMS Common Cartridge for import into Canvas, Moodle, or Brightspace:</p>
+      <form id="imsccForm">
+        <input type="hidden" id="imscc-suite-id">
+        <div class="form-group">
+          <label>Consumer *</label>
+          <select name="consumerId" id="imscc-consumer-select" required>
+            <option value="">Select a consumer...</option>
+          </select>
+        </div>
+        <div class="form-actions">
+          <button type="button" class="btn btn-secondary" onclick="closeModal('imsccModal')">Cancel</button>
+          <button type="submit" class="btn btn-primary">Download IMSCC</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
   <script>
     // Tab switching
     document.querySelectorAll('.tab').forEach(tab => {
@@ -947,6 +1397,8 @@ function getDashboardPage(): string {
     loadConsumers();
     loadCourses();
     loadLaunches();
+    loadSuites();
+    loadSettings();
 
     async function loadStats() {
       try {
