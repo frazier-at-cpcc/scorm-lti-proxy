@@ -850,10 +850,18 @@ adminRouter.get('/api/settings', requireAuth, async (_req: Request, res: Respons
       settings[row.key] = row.value;
     });
 
-    // Include current baseUrl (from config or DB)
+    // Include current values from config (env vars or DB)
     if (!settings.base_url) {
       settings.base_url = config.baseUrl;
     }
+    if (!settings.xapi_endpoint) {
+      settings.xapi_endpoint = config.xapi.endpoint;
+    }
+    if (!settings.xapi_key) {
+      settings.xapi_key = config.xapi.key;
+    }
+    // Don't send xapi_secret value for security - just indicate if it's set
+    settings.xapi_secret_set = config.xapi.secret ? 'true' : 'false';
 
     res.json(settings);
   } catch (error) {
@@ -865,26 +873,56 @@ adminRouter.get('/api/settings', requireAuth, async (_req: Request, res: Respons
 // Update settings
 adminRouter.put('/api/settings', requireAuth, async (req: Request, res: Response) => {
   try {
-    const { base_url } = req.body;
+    const { base_url, xapi_endpoint, xapi_key, xapi_secret } = req.body;
+
+    // Helper to save a setting to DB
+    const saveSetting = async (key: string, value: string) => {
+      await query(
+        `INSERT INTO settings (key, value, updated_at)
+         VALUES ($1, $2, CURRENT_TIMESTAMP)
+         ON CONFLICT (key) DO UPDATE SET value = $2, updated_at = CURRENT_TIMESTAMP`,
+        [key, value]
+      );
+    };
 
     if (base_url) {
       // Validate URL format
       try {
         new URL(base_url);
       } catch {
-        return res.status(400).json({ error: 'Invalid URL format' });
+        return res.status(400).json({ error: 'Invalid Base URL format' });
       }
-
-      // Save to database
-      await query(
-        `INSERT INTO settings (key, value, updated_at)
-         VALUES ('base_url', $1, CURRENT_TIMESTAMP)
-         ON CONFLICT (key) DO UPDATE SET value = $1, updated_at = CURRENT_TIMESTAMP`,
-        [base_url]
-      );
-
-      // Update runtime config
+      await saveSetting('base_url', base_url);
       updateRuntimeConfig({ baseUrl: base_url });
+    }
+
+    // xAPI endpoint (optional - can be empty to disable)
+    if (xapi_endpoint !== undefined) {
+      if (xapi_endpoint && xapi_endpoint.trim()) {
+        // Validate URL format if provided
+        try {
+          new URL(xapi_endpoint);
+        } catch {
+          return res.status(400).json({ error: 'Invalid xAPI Endpoint URL format' });
+        }
+        await saveSetting('xapi_endpoint', xapi_endpoint);
+        updateRuntimeConfig({ xapiEndpoint: xapi_endpoint });
+      } else {
+        // Clear the endpoint
+        await saveSetting('xapi_endpoint', '');
+        updateRuntimeConfig({ xapiEndpoint: '' });
+      }
+    }
+
+    if (xapi_key !== undefined) {
+      await saveSetting('xapi_key', xapi_key);
+      updateRuntimeConfig({ xapiKey: xapi_key });
+    }
+
+    // Only update secret if a new value is provided (not empty placeholder)
+    if (xapi_secret !== undefined && xapi_secret !== '') {
+      await saveSetting('xapi_secret', xapi_secret);
+      updateRuntimeConfig({ xapiSecret: xapi_secret });
     }
 
     res.json({ success: true });
@@ -1380,6 +1418,27 @@ function getDashboardPage(): string {
               <input type="url" name="base_url" id="settings-base-url" placeholder="https://your-server.com" required>
               <p style="color: #666; font-size: 13px; margin-top: 8px;">The public URL of this server. Used in LTI launch URLs and IMSCC exports.</p>
             </div>
+
+            <h3 style="margin-top: 24px; margin-bottom: 16px; padding-top: 16px; border-top: 1px solid #e0e0e0;">xAPI / Learning Record Store (LRS)</h3>
+            <p style="color: #666; font-size: 13px; margin-bottom: 16px;">Configure an xAPI LRS to receive learning activity statements. Leave empty to disable xAPI reporting.</p>
+
+            <div class="form-group">
+              <label>xAPI Endpoint URL</label>
+              <input type="url" name="xapi_endpoint" id="settings-xapi-endpoint" placeholder="https://lrs.example.com/xapi">
+              <p style="color: #666; font-size: 13px; margin-top: 8px;">The base URL of your LRS xAPI endpoint.</p>
+            </div>
+            <div class="form-group">
+              <label>xAPI Key / Username</label>
+              <input type="text" name="xapi_key" id="settings-xapi-key" placeholder="your-api-key">
+              <p style="color: #666; font-size: 13px; margin-top: 8px;">The API key or username for LRS authentication.</p>
+            </div>
+            <div class="form-group">
+              <label>xAPI Secret / Password</label>
+              <input type="password" name="xapi_secret" id="settings-xapi-secret" placeholder="Leave blank to keep current">
+              <p style="color: #666; font-size: 13px; margin-top: 8px;">The API secret or password. Leave blank to keep the current value.</p>
+              <p id="xapi-secret-status" style="color: #666; font-size: 12px; margin-top: 4px;"></p>
+            </div>
+
             <div class="form-actions" style="justify-content: flex-start;">
               <button type="submit" class="btn btn-primary">Save Settings</button>
             </div>
@@ -2129,6 +2188,17 @@ function getDashboardPage(): string {
         const res = await fetch('/admin/api/settings');
         const settings = await res.json();
         document.getElementById('settings-base-url').value = settings.base_url || '';
+        document.getElementById('settings-xapi-endpoint').value = settings.xapi_endpoint || '';
+        document.getElementById('settings-xapi-key').value = settings.xapi_key || '';
+        // Don't populate secret - just show status
+        const secretStatus = document.getElementById('xapi-secret-status');
+        if (settings.xapi_secret_set === 'true') {
+          secretStatus.textContent = 'A secret is currently configured.';
+          secretStatus.style.color = '#28a745';
+        } else {
+          secretStatus.textContent = 'No secret configured.';
+          secretStatus.style.color = '#666';
+        }
       } catch (e) {
         console.error('Failed to load settings:', e);
       }

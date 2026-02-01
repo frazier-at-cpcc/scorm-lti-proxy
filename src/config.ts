@@ -6,6 +6,9 @@ dotenv.config();
 // Runtime-configurable settings (can be updated via admin UI)
 const runtimeConfig = {
   baseUrl: process.env.BASE_URL || 'http://localhost:3000',
+  xapiEndpoint: process.env.XAPI_LRS_ENDPOINT || '',
+  xapiKey: process.env.XAPI_LRS_KEY || '',
+  xapiSecret: process.env.XAPI_LRS_SECRET || '',
 };
 
 export const config = {
@@ -25,9 +28,15 @@ export const config = {
   },
 
   xapi: {
-    endpoint: process.env.XAPI_LRS_ENDPOINT || '',
-    key: process.env.XAPI_LRS_KEY || '',
-    secret: process.env.XAPI_LRS_SECRET || '',
+    get endpoint() {
+      return runtimeConfig.xapiEndpoint;
+    },
+    get key() {
+      return runtimeConfig.xapiKey;
+    },
+    get secret() {
+      return runtimeConfig.xapiSecret;
+    },
   },
 
   session: {
@@ -45,8 +54,22 @@ export const config = {
 /**
  * Update runtime configuration settings
  */
-export function updateRuntimeConfig(updates: { baseUrl?: string }) {
+export function updateRuntimeConfig(updates: {
+  baseUrl?: string;
+  xapiEndpoint?: string;
+  xapiKey?: string;
+  xapiSecret?: string;
+}) {
   if (updates.baseUrl) {
     runtimeConfig.baseUrl = updates.baseUrl;
+  }
+  if (updates.xapiEndpoint !== undefined) {
+    runtimeConfig.xapiEndpoint = updates.xapiEndpoint;
+  }
+  if (updates.xapiKey !== undefined) {
+    runtimeConfig.xapiKey = updates.xapiKey;
+  }
+  if (updates.xapiSecret !== undefined) {
+    runtimeConfig.xapiSecret = updates.xapiSecret;
   }
 }

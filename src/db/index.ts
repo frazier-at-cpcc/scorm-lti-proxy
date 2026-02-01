@@ -142,6 +142,15 @@ export async function loadSettings(): Promise<void> {
       if (row.key === 'base_url') {
         updateRuntimeConfig({ baseUrl: row.value });
         console.log(`Loaded base_url from database: ${row.value}`);
+      } else if (row.key === 'xapi_endpoint') {
+        updateRuntimeConfig({ xapiEndpoint: row.value });
+        console.log(`Loaded xapi_endpoint from database: ${row.value}`);
+      } else if (row.key === 'xapi_key') {
+        updateRuntimeConfig({ xapiKey: row.value });
+        console.log(`Loaded xapi_key from database`);
+      } else if (row.key === 'xapi_secret') {
+        updateRuntimeConfig({ xapiSecret: row.value });
+        console.log(`Loaded xapi_secret from database`);
       }
     }
   } catch (error) {
